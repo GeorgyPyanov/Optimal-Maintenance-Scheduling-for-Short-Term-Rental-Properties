@@ -68,3 +68,8 @@ Important fields:
 - ACO route invariants;
 - multi-route assignment invariants;
 - dataset-level integration checks.
+
+## Contributors
+- Georgij Pyanov - `g.pyanov@innopolis.university`
+- Maria Karpova - `m.karpova@innopolis.university`
+- Daria Potapova - `d.potapova@innopolis.university`
