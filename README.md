@@ -1,100 +1,70 @@
-# Optimal-Maintenance-Scheduling-for-Short-Term-Rental-Properties
+# Optimal Maintenance Scheduling for Short-Term Rental Properties
 
-## Data preprocessing
+## About
+This project develops and evaluates a route-planning approach for maintenance teams servicing short-term rental properties. It combines geospatial distance, urgency/complaint signals, pricing impact, and seasonal availability into a unified Ant Colony Optimization workflow, then produces optimized single-team or multi-team maintenance schedules with explicit time progression, seasonal constraints, and cost-based pheromone learning.
 
-## Dataset Description: `result_dataset.csv`
+## Project Goal
+- Minimize total maintenance routing cost.
+- Prioritize high-impact properties (`aco_priority`).
+- Respect seasonality (`best_maintenance_month`).
 
-This file contains merged and preprocessed data from listings, calendar, and reviews. All data is prepared specifically for the Ant Colony Optimization (ACO) algorithm.
+## How The Algorithm Works
+Implementation: [src/aco.py](/C:/Users/Я/PycharmProjects/Optimal-Maintenance-Scheduling-for-Short-Term-Rental-Properties/src/aco.py)
 
-### 1. Identification & Location
+1. Data preparation:
+- Read `result_dataset.csv`.
+- Select required columns (`id`, coordinates, priority, preferred month, etc.).
+- Add a virtual depot (node `0`) at mean coordinates.
+- Build distance matrix.
+- Scale priorities and clip lower bound for numeric stability.
 
-| Column | Description | Data Type | Example |
-|--------|-------------|-----------|---------|
-| `id` | Unique property identifier | int | 12345 |
-| `latitude` | Latitude coordinate | float | 39.9042 |
-| `longitude` | Longitude coordinate | float | 116.4074 |
-| `neighbourhood` | Beijing district (original Chinese name) | string | '朝阳区' |
-| `neighbourhood_en` | Beijing district (English translation) | string | 'Chaoyang' |
+2. Time model (`MaintenanceCalendar`):
+- Convert distance to travel time with `speed_km_per_month`.
+- Add per-visit service time.
+- Check operating window constraints.
+- Optionally wait for preferred service month (`max_wait_months`).
 
-### 2. Economic Indicators
+3. Transition scoring:
+- For each candidate node, compute a score from:
+  - pheromone level;
+  - inverse distance;
+  - node priority;
+  - seasonal mismatch penalty;
+  - waiting penalty;
+  - delay penalty for high-priority nodes.
+- Convert scores to probabilities and sample the next node.
 
-| Column | Description | Data Type | Example |
-|--------|-------------|-----------|---------|
-| `price` | Nightly price from listings (USD) | float | 150.0 |
-| `avg_calendar_price` | Average price from calendar data (may differ due to discounts/surges) | float | 145.50 |
+4. Route construction:
+- `AntColony`: one route visits all nodes.
+- `MultiAntColony`: multiple routes for multiple brigades/vehicles.
 
-### 3. Usage Intensity (Proxy for Wear & Tear)
+5. Cost function:
+- Travel distance.
+- Seasonal penalty.
+- Route duration penalty.
+- Initial idle-time penalty.
+- Priority-delay penalty.
+- Optional return-to-depot cost.
 
-| Column | Description | Data Type | Example |
-|--------|-------------|-----------|---------|
-| `reviews_per_month` | Average number of reviews per month. Higher = more guest turnover → more wear | float | 3.5 |
-| `number_of_reviews` | Total number of reviews all time | int | 45 |
+6. Pheromone update:
+- Evaporate pheromones (`decay`).
+- Deposit pheromones on better solutions (`Q / cost`).
 
-### 4. Availability (Maintenance Windows)
+## Data Description
+Dataset: [src/result_dataset.csv](/C:/Users/Я/PycharmProjects/Optimal-Maintenance-Scheduling-for-Short-Term-Rental-Properties/src/result_dataset.csv)
 
-| Column | Description | Data Type | Example |
-|--------|-------------|-----------|---------|
-| `availability_ratio` | Fraction of time property is available (0 = always booked, 1 = always empty) | float | 0.35 |
-| `best_maintenance_month` | Month with maximum availability (1-12). Suggestion for scheduling | int | 2 |
+Important fields:
+- `id`: property id.
+- `latitude`, `longitude`: coordinates.
+- `price`: price level.
+- `complaint_ratio`: complaint signal.
+- `best_maintenance_month`: preferred maintenance month.
+- `aco_priority`: final optimization priority.
 
-### 5. Problems & Complaints (Urgency)
-
-| Column | Description | Data Type | Example |
-|--------|-------------|-----------|---------|
-| `total_reviews` | Total number of reviews for the property | int | 45 |
-| `complaint_count` | Number of reviews containing complaints (keywords: broken, dirty, repair, etc.) | int | 8 |
-| `complaint_ratio` | Complaint ratio = complaint_count / total_reviews | float | 0.18 |
-| `urgency_score` | Normalized urgency (0-1). 1 = maximum complaints among all properties | float | 0.75 |
-
-### 6. Weights & Final ACO Priority
-
-| Column | Description | Data Type | Example |
-|--------|-------------|-----------|---------|
-| `neighbourhood_weight` | District weight. Central/tourist districts have higher weight (Chaoyang = 1.3, Dongcheng = 1.5, etc.) | float | 1.3 |
-| `aco_priority` | **Final priority for Ant Colony Algorithm**. Higher = more important to service. Formula: (wear + urgency) × availability × price × district weight | float | 0.87 |
-
----
-
-## **How to Use in ACO**
-
-In the ant transition formula:
-
-P(k,ij) = [τij]^α · [ηij]^β / Σ
-
-where ηij = 1/(dij · priority_j)
-
-
-**`priority_j` = `aco_priority`** from this dataset.
-
----
-
-## **Dataset Statistics**
-
-- **Number of properties:** `{final_output.shape[0]}`
-- **Number of columns:** `{final_output.shape[1]}`
-- **Priority range:** from `{final_output['aco_priority'].min():.3f}` to `{final_output['aco_priority'].max():.3f}`
-
----
-
-## **Example Row**
-
-| Column | Value | Meaning |
-|--------|-------|---------|
-| id | 2818 | Property #2818 |
-| neighbourhood | Chaoyang | Chaoyang district (central Beijing) |
-| price | 199.0 | $199 per night |
-| reviews_per_month | 4.2 | High turnover |
-| availability_ratio | 0.28 | Only 28% available time |
-| complaint_ratio | 0.32 | 32% of reviews have complaints |
-| urgency_score | 0.91 | Very urgent! |
-| best_maintenance_month | 2 | Best to service in February |
-| aco_priority | 0.94 | Maximum priority |
-
-**Interpretation:** Central property, expensive, highly demanded, many complaints, but few available windows. The ant should try to include it in the route at all costs!
-
----
-
-## **Notes**
-
-- English translation (`neighbourhood`) added for convenience
-- All missing values are filled: properties without reviews have `complaint_ratio = 0`, properties without calendar data have `availability_ratio = 0`
+## Tests
+Сoverage for:
+- calendar and season logic;
+- data loading and validation;
+- ACO route invariants;
+- multi-route assignment invariants;
+- dataset-level integration checks.

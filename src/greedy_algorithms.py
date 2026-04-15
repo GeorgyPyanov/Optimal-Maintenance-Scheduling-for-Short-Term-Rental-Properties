@@ -1,10 +1,21 @@
 from __future__ import annotations
 
+"""Baseline greedy heuristics used as alternatives/comparators for ACO.
+
+This module includes:
+- nearest-neighbor multi-route construction,
+- simple bin packing for node-to-vehicle assignment,
+- MST + DFS traversal baseline,
+- adapter and shared cost/time helpers.
+"""
+
 import numpy as np
 from typing import List, Tuple
 from collections import defaultdict
 
 class NearestNeighbor:
+    """Nearest-neighbor heuristic with calendar-aware feasibility checks."""
+
     def __init__(self, distances: np.ndarray):
         self.distances = distances
 
@@ -12,6 +23,7 @@ class NearestNeighbor:
                           preferred_months: np.ndarray,
                           max_months: float = 6.0,
                           n_vehicles: int = 5) -> Tuple[List[List[int]], List]:
+        """Build routes greedily by repeatedly selecting closest feasible unvisited node."""
         unvisited = set(range(1, len(distances)))
         routes = []
         states_by_route = []
@@ -62,6 +74,8 @@ class NearestNeighbor:
         return routes, states_by_route
 
 class BinPacking:
+    """First-fit style packing of nodes into limited-time vehicle bins."""
+
     def __init__(self, distances: np.ndarray, calendar,
                  max_months_per_vehicle: float = 6.0):
         self.distances = distances
@@ -69,6 +83,7 @@ class BinPacking:
         self.max_months = max_months_per_vehicle
 
     def _estimate_route_time(self, nodes: List[int]) -> float:
+        """Estimate route duration including return to depot."""
         if not nodes:
             return 0.0
         total = 0.0
@@ -81,6 +96,7 @@ class BinPacking:
         return total
 
     def solve(self, nodes: List[int], max_bins: int = 5) -> List[List[int]]:
+        """Assign nodes to bins (vehicles) while respecting max_months capacity."""
         if not nodes:
             return []
 
@@ -108,6 +124,8 @@ class BinPacking:
         return bins
 
 class PrimMST:
+    """Prim minimum spanning tree helper used for MST traversal baseline."""
+
     def __init__(self, distances: np.ndarray):
         self.distances = distances
         self.V = len(distances)
@@ -122,6 +140,7 @@ class PrimMST:
         return min_index
 
     def prim_mst(self) -> Tuple[List[Tuple[int, int]], float]:
+        """Build MST from distance matrix and return edges with total weight."""
         key = [float('inf')] * self.V
         parent = [-1] * self.V
         mst_set = [False] * self.V
@@ -151,6 +170,7 @@ class PrimMST:
         return edges, total_weight
 
     def get_dfs_tour(self, edges: List[Tuple[int, int]]) -> List[int]:
+        """Create depth-first traversal tour from MST edges."""
         adj = defaultdict(list)
         for u, v in edges:
             adj[u].append(v)
@@ -174,6 +194,7 @@ class PrimMST:
                                 preferred_months: np.ndarray,
                                 distances: np.ndarray,
                                 max_months: float = 6.0) -> Tuple[List[List[int]], List]:
+        """Split one long tour into multiple routes constrained by max time."""
         routes = []
         states_by_route = []
 
@@ -223,6 +244,8 @@ class PrimMST:
         return routes, states_by_route
 
 class Adapter:
+    """Facade for selecting one of the heuristic route constructors."""
+
     def __init__(self, distances: np.ndarray, priorities: np.ndarray,
                  preferred_months: np.ndarray, calendar,
                  method: str = "nearest_neighbor"):
@@ -233,6 +256,7 @@ class Adapter:
         self.method = method
 
     def construct_routes(self, n_vehicles: int = 5, max_months_per_vehicle: float = 6.0):
+        """Dispatch to selected heuristic method."""
         if self.method == "nearest_neighbor":
             nn = NearestNeighbor(self.distances)
             return nn.solve_multi_route(self.distances, self.calendar,
@@ -245,6 +269,7 @@ class Adapter:
             return self._nearest_neighbor_routes(n_vehicles, max_months_per_vehicle)
 
     def _build_states(self, route: List[int], start_offset: float) -> List:
+        """Recompute calendar states for a ready route."""
         states = [self.calendar.describe_time(start_offset)]
         elapsed = start_offset
 
@@ -284,6 +309,7 @@ class Adapter:
                                      self.preferred_months, max_months, n_vehicles)
 
 def calculate_full_cost(routes, states, distances, calendar, preferred_months, priorities):
+    """Evaluate routes with distance + season + duration + priority-delay penalties."""
     total = 0.0
 
     for route, states_list in zip(routes, states):
@@ -321,6 +347,7 @@ def calculate_full_cost(routes, states, distances, calendar, preferred_months, p
     return total
 
 def check_route_time(route, distances, calendar):
+    """Compute full route duration including service and return to depot."""
     actual_time = 0.0
     current = 0
     for node in route[1:]:

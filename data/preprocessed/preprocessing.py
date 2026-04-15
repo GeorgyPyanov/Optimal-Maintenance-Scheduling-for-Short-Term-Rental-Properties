@@ -2,6 +2,9 @@ import pandas as pd
 import numpy as np
 from sklearn.preprocessing import MinMaxScaler
 
+# End-to-end preprocessing pipeline for creating ACO-ready dataset.
+# Output file: result_dataset.csv
+
 # Load datasets
 listings = pd.read_csv('../raw/dataset/listings_clean.csv')
 calendar = pd.read_csv('../raw/dataset/calendar_detail.csv')
@@ -62,7 +65,7 @@ calendar_agg = calendar_agg.merge(best_month, on='listing_id', how='left')
 issue_keywords = ['broken', 'not working', 'repair', 'fix', 'noisy', 'dirty', 'mold', 'leak', 'bad']
 
 def count_issues(comments):
-    """Count how many issue keywords appear in review text"""
+    """Count issue-related keyword hits in one review comment."""
     if pd.isna(comments):
         return 0
     comments = str(comments).lower()
@@ -87,6 +90,7 @@ final_df = final_df.merge(reviews_agg, left_on='id', right_on='listing_id', how=
 final_df = final_df.drop(columns=['listing_id_x', 'listing_id_y'], errors='ignore')
 
 # Fill missing values
+# Missing values are expected after joins (for listings with sparse history).
 final_df['availability_ratio'] = final_df['availability_ratio'].fillna(0)
 final_df['avg_calendar_price'] = final_df['avg_calendar_price'].fillna(final_df['price'])
 final_df['best_maintenance_month'] = final_df['best_maintenance_month'].fillna(6)  # Default to June
@@ -138,6 +142,7 @@ output_columns = [col for col in output_columns if col is not None and col in fi
 final_output = final_df[output_columns].copy()
 
 # Translate neighborhoods to English
+# Values below are source labels from raw dataset encoding.
 neighbourhood_translation = {
     '朝阳区': 'Chaoyang',
     '东城区': 'Dongcheng',

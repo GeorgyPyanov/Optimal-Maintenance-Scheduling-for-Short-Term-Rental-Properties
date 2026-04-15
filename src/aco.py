@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+"""Ant Colony Optimization (ACO) for maintenance routing with season constraints.
+
+This module contains:
+- a time/calendar model used by the optimizer,
+- data loading and preparation utilities,
+- single-vehicle and multi-vehicle ACO solvers.
+"""
+
 from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple
 
@@ -10,12 +18,16 @@ from sklearn.preprocessing import MinMaxScaler
 
 @dataclass(frozen=True)
 class TimeState:
+    """Snapshot of planning time at a specific route step."""
+
     elapsed_months: float
     month_of_year: float
     cycle: int
 
 
 class MaintenanceCalendar:
+    """Utility class for converting distance into calendar-aware planning time."""
+
     def __init__(
         self,
         start_month: float,
@@ -35,10 +47,12 @@ class MaintenanceCalendar:
 
     @staticmethod
     def normalize_month(month: float) -> float:
+        """Map any real month value into [1, 12] cyclic representation."""
         return ((float(month) - 1.0) % 12.0) + 1.0
 
     @staticmethod
     def season_distance(month_a: float, month_b: float) -> float:
+        """Shortest cyclic distance between two months on a 12-month circle."""
         a = MaintenanceCalendar.normalize_month(month_a)
         b = MaintenanceCalendar.normalize_month(month_b)
         diff = abs(a - b)
@@ -57,11 +71,13 @@ class MaintenanceCalendar:
         )
 
     def advance(self, elapsed_months: float, distance_km: float) -> TimeState:
+        """Advance time by travel + service and return the resulting time state."""
         travel_time = float(distance_km) / self.speed_km_per_month
         new_elapsed = float(elapsed_months) + travel_time + self.service_time_months
         return self.describe_time(new_elapsed)
 
     def wait_for_preferred_month(self, current_state: TimeState, preferred_month: float) -> TimeState:
+        """Wait until preferred month if waiting is allowed and within max wait budget."""
         if self.max_wait_months <= 0:
             return current_state
 
@@ -76,6 +92,7 @@ class MaintenanceCalendar:
 
     @staticmethod
     def is_within_operating_window(month: float, operating_months: Optional[Tuple[float, float]]) -> bool:
+        """Check if month falls into allowed operating interval (including wrap-around)."""
         if operating_months is None:
             return True
 
@@ -95,6 +112,7 @@ class MaintenanceCalendar:
         season_window_months: float,
         operating_months: Optional[Tuple[float, float]],
     ) -> TimeState:
+        """Return arrival state or delayed state that better fits seasonal constraints."""
         if self.is_within_operating_window(arrival_state.month_of_year, operating_months):
             if self.season_distance(arrival_state.month_of_year, preferred_month) <= season_window_months:
                 return arrival_state
@@ -113,6 +131,7 @@ class MaintenanceCalendar:
 
 
 def compute_distance_matrix(df: pd.DataFrame) -> np.ndarray:
+    """Compute pairwise Euclidean-like distance matrix from lat/lon coordinates."""
     coords = df[["latitude", "longitude"]].to_numpy(dtype=float)
     n = len(coords)
     dist_matrix = np.zeros((n, n), dtype=float)
@@ -125,6 +144,14 @@ def compute_distance_matrix(df: pd.DataFrame) -> np.ndarray:
 
 
 def load_and_prepare_data(csv_path: str = "result_dataset.csv", n_properties: int = 50):
+    """Load dataset, pick top-priority properties, and build ACO-ready arrays.
+
+    Returns:
+        distances: matrix including depot at index 0
+        priorities: normalized priorities aligned with distances
+        preferred_months: preferred maintenance month per node
+        df: selected property rows without depot
+    """
     df = pd.read_csv(csv_path)
 
     required_cols = [
@@ -144,6 +171,7 @@ def load_and_prepare_data(csv_path: str = "result_dataset.csv", n_properties: in
     df = df[required_cols].dropna().reset_index(drop=True)
     df = df.nlargest(n_properties, "aco_priority").reset_index(drop=True)
 
+    # Insert synthetic depot as node 0 so every algorithm starts from one anchor.
     depot = pd.DataFrame(
         [
             {
@@ -171,6 +199,7 @@ def load_and_prepare_data(csv_path: str = "result_dataset.csv", n_properties: in
 
 
 def create_route_table(df: pd.DataFrame, obj_indices: Sequence[int], time_states: Sequence[TimeState]) -> pd.DataFrame:
+    """Build human-readable route report from node indices and computed time states."""
     df_indices = [idx - 1 for idx in obj_indices]
     route_df = df.iloc[df_indices].copy().reset_index(drop=True)
     route_df["visit_order"] = np.arange(1, len(route_df) + 1)
@@ -196,6 +225,8 @@ def create_route_table(df: pd.DataFrame, obj_indices: Sequence[int], time_states
 
 
 class BaseAntColony:
+    """Common ACO logic shared by single-route and multi-route solvers."""
+
     def __init__(
         self,
         distances: np.ndarray,
@@ -256,6 +287,7 @@ class BaseAntColony:
         self.pheromones = np.ones((n, n), dtype=float) / max(n, 1)
 
     def _transition_score(self, current: int, candidate: int, elapsed_months: float) -> float:
+        """Compute attractiveness score of moving from current node to candidate."""
         distance = self.distances[current, candidate] + 1e-6
         arrival = self.calendar.advance(elapsed_months, distance)
         scheduled = self.calendar.schedule_visit(
@@ -266,7 +298,7 @@ class BaseAntColony:
         )
         season_gap = self.calendar.season_distance(self.preferred_months[candidate], scheduled.month_of_year)
 
-        tau = max(self.pheromones[current, candidate], 1e-12)
+        tau = max(self.pheromones[current, candidate], 1e-12)  # Numerical floor for stability.
         eta_distance = 1.0 / distance
         eta_priority = self.priorities[candidate]
         if season_gap <= self.season_window_months:
@@ -280,6 +312,7 @@ class BaseAntColony:
         return (tau ** self.alpha) * (eta ** self.beta)
 
     def _select_next(self, current: int, remaining: Sequence[int], elapsed_months: float) -> Tuple[int, TimeState]:
+        """Sample next node from probabilistic transition distribution."""
         choices = list(remaining)
         raw_scores = np.array(
             [self._transition_score(current, candidate, elapsed_months) for candidate in choices],
@@ -287,6 +320,7 @@ class BaseAntColony:
         )
 
         total = raw_scores.sum()
+        # Fallback to uniform distribution if scores are degenerate.
         if total <= 0 or not np.isfinite(total):
             probabilities = np.full(len(choices), 1.0 / len(choices), dtype=float)
         else:
@@ -304,6 +338,7 @@ class BaseAntColony:
         return chosen, new_state
 
     def _route_cost(self, path: Sequence[int], time_states: Sequence[TimeState]) -> float:
+        """Compute weighted route objective used by pheromone updates."""
         if len(path) <= 1:
             return 0.0
 
@@ -339,6 +374,7 @@ class BaseAntColony:
         )
 
     def _update_pheromones(self, solutions, costs: Sequence[float]):
+        """Apply evaporation and deposit pheromones based on solution quality."""
         self.pheromones *= self.decay
         for solution, cost in zip(solutions, costs):
             if cost <= 0:
@@ -356,11 +392,14 @@ class BaseAntColony:
 
 
 class AntColony(BaseAntColony):
+    """Classic single-route ACO variant (one route services all nodes)."""
+
     @staticmethod
     def _paths_for_pheromones(solution):
         return [solution[0]]
 
     def _construct_path(self) -> Tuple[List[int], List[TimeState]]:
+        """Construct one complete path by iterative probabilistic node selection."""
         path = [0]
         states = [self.calendar.initial_state()]
         current = 0
@@ -378,6 +417,7 @@ class AntColony(BaseAntColony):
         return path, states
 
     def run(self):
+        """Run optimization loop and return best found route and history."""
         best_path = None
         best_states = None
         best_cost = float("inf")
@@ -398,6 +438,8 @@ class AntColony(BaseAntColony):
 
 
 class MultiAntColony(BaseAntColony):
+    """Multi-vehicle ACO variant that distributes nodes across brigades."""
+
     def __init__(
         self,
         distances: np.ndarray,
@@ -458,6 +500,7 @@ class MultiAntColony(BaseAntColony):
         return routes
 
     def _route_limit(self, unvisited_count: int) -> int:
+        """Soft balancing cap: target nodes per vehicle at route build time."""
         if self.n_vehicles <= 0:
             return unvisited_count
         return int(np.ceil(unvisited_count / self.n_vehicles))
@@ -466,6 +509,7 @@ class MultiAntColony(BaseAntColony):
         return max(0.0, vehicle_idx) * self.vehicle_start_gap_months
 
     def _construct_single_route(self, unvisited: set[int], start_offset: float = 0.0) -> Tuple[List[int], List[TimeState]]:
+        """Build a route for one vehicle starting at a given calendar offset."""
         path = [0]
         states = [self.calendar.describe_time(start_offset)]
         current = 0
@@ -487,6 +531,7 @@ class MultiAntColony(BaseAntColony):
         return path, states
 
     def _construct_multi_route(self) -> Tuple[List[List[int]], List[List[TimeState]]]:
+        """Construct all vehicle routes and then assign any leftover nodes greedily."""
         unvisited = set(range(1, self.distances.shape[0]))
         routes: List[List[int]] = []
         states_by_route: List[List[TimeState]] = []
@@ -521,9 +566,11 @@ class MultiAntColony(BaseAntColony):
         return routes, states_by_route
 
     def _solution_cost(self, routes: Sequence[Sequence[int]], states_by_route: Sequence[Sequence[TimeState]]) -> float:
+        """Aggregate cost across all constructed routes."""
         return sum(self._route_cost(route, states) for route, states in zip(routes, states_by_route))
 
     def run(self):
+        """Run multi-vehicle optimization loop and return best solution."""
         best_routes = None
         best_states = None
         best_cost = float("inf")
